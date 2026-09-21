@@ -1,0 +1,65 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.WYRE-AI/alloy-navigator-mcp",
+  "title": "Alloy Navigator",
+  "description": "MCP server for Alloy Navigator's REST API - IT asset management and ITSM data for MSPs.",
+  "repository": {
+    "url": "https://github.com/WYRE-AI/alloy-navigator-mcp",
+    "source": "github"
+  },
+  "version": "0.0.0",
+  "websiteUrl": "https://github.com/WYRE-AI/alloy-navigator-mcp",
+  "packages": [
+    {
+      "registryType": "oci",
+      "identifier": "ghcr.io/wyre-ai/alloy-navigator-mcp:0.0.0",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "ALLOY_BASE_URL",
+          "description": "Base URL of the Alloy Navigator server this connector talks to, e.g. https://alloy.example.com. Every Alloy Navigator instance is self-hosted (on-prem or self-hosted-cloud); there is no shared hosted endpoint.",
+          "isRequired": true,
+          "isSecret": false,
+          "format": "string"
+        },
+        {
+          "name": "ALLOY_CLIENT_ID",
+          "description": "Application account client ID, registered in Alloy Navigator's Settings App under Services > API > Applications.",
+          "isRequired": true,
+          "isSecret": true,
+          "format": "string"
+        },
+        {
+          "name": "ALLOY_CLIENT_SECRET",
+          "description": "Application account client secret, issued alongside the client ID.",
+          "isRequired": true,
+          "isSecret": true,
+          "format": "string"
+        },
+        {
+          "name": "MCP_TRANSPORT",
+          "description": "Transport mode for the server. Set to 'stdio' for local CLI use; the image defaults to 'http' for gateway hosting.",
+          "isRequired": false,
+          "default": "stdio",
+          "format": "string"
+        },
+        {
+          "name": "AUTH_MODE",
+          "description": "Credential source: 'env' reads vars locally, 'gateway' expects header injection from the WYRE MCP Gateway.",
+          "isRequired": false,
+          "default": "env",
+          "format": "string"
+        },
+        {
+          "name": "LOG_LEVEL",
+          "description": "Log verbosity: debug, info, warn, error",
+          "isRequired": false,
+          "default": "info",
+          "format": "string"
+        }
+      ]
+    }
+  ]
+}
