@@ -26,9 +26,52 @@ This connector was built directly against Alloy Navigator's official API User's 
 | `ALLOY_CLIENT_ID` | Application account client ID, issued under Settings App > Services > API > Applications. |
 | `ALLOY_CLIENT_SECRET` | Application account client secret, issued alongside the client ID. |
 | `MCP_TRANSPORT` | `stdio` (default) or `http`. |
-| `AUTH_MODE` | `env` (default, reads the vars above) or `gateway` (credentials arrive per-request via the `X-Alloy-Base-Url` / `X-Alloy-Client-Id` / `X-Alloy-Client-Secret` headers, injected by the Conduit gateway). |
-| `CONDUIT_S2S_SECRET` | When set, the HTTP transport requires a valid `X-Gateway-S2S` header (Conduit sidecar auth) on every `/mcp` request. |
+| `AUTH_MODE` | `env` (default, reads the vars above) or `gateway` (credentials arrive per-request via the `X-Alloy-Base-Url` / `X-Alloy-Client-Id` / `X-Alloy-Client-Secret` headers, injected by the Conduit gateway). The Docker image and Compose file default to `gateway`. In gateway mode, `/mcp` returns 401 when any of those headers is missing and never falls back to `ALLOY_*`. |
+| `CONDUIT_S2S_SECRET` | Required for HTTP. Service-to-service secret. The HTTP server logs an error and exits non-zero when this is empty or a known placeholder (`changeme`, `secret`, `placeholder`, `your-s2s-secret`, `replace-with-a-real-secret`, and the same list in `src/http.ts`). Compose will not start when it is unset. Never commit a real value. The process never logs it. |
+| `MCP_ALLOW_INSECURE_DEV` | Set to exactly `1` only for local development to start HTTP without `CONDUIT_S2S_SECRET`. The process logs a warning, skips `X-Gateway-S2S`, and listens on `127.0.0.1` only. A wider `MCP_HTTP_HOST` is overridden. A known placeholder secret is still refused. |
+| `MCP_HTTP_HOST` | Bind address when `MCP_TRANSPORT=http`. Defaults to `127.0.0.1`. A configured `CONDUIT_S2S_SECRET` honors this value, including `0.0.0.0`. The container image sets `0.0.0.0`. Without a secret, the listener is `127.0.0.1` only. |
+| `MCP_HTTP_PORT` | HTTP port. Defaults to `8080`. |
 | `LOG_LEVEL` | `debug` \| `info` (default) \| `warn` \| `error`. |
+
+`/health` stays unauthenticated and does not read credentials. The stdio transport does not use `CONDUIT_S2S_SECRET`.
+
+### HTTP authentication
+
+With `MCP_TRANSPORT=http` and `CONDUIT_S2S_SECRET` set, every `/mcp` request must include `X-Gateway-S2S`. A missing or invalid header returns 401 before any vendor credential is read.
+
+The header is an HMAC proof, not a copy of the secret:
+
+```text
+t=<unix seconds>,v1=<hex hmac-sha256>
+```
+
+`<hex hmac-sha256>` is HMAC-SHA256 of the ASCII string `t=<unix seconds>` (the same `t=` prefix and the same decimal timestamp), keyed with `CONDUIT_S2S_SECRET`, encoded as lowercase hex. The timestamp must be within 300 seconds of the server clock.
+
+```js
+import { createHmac } from 'node:crypto';
+
+const secret = process.env.CONDUIT_S2S_SECRET;
+const t = Math.floor(Date.now() / 1000);
+const v1 = createHmac('sha256', secret).update(`t=${t}`).digest('hex');
+const xGatewayS2s = `t=${t},v1=${v1}`;
+```
+
+In `AUTH_MODE=gateway`, `/mcp` also requires `X-Alloy-Base-Url`, `X-Alloy-Client-Id`, and `X-Alloy-Client-Secret`. Those headers are the only credential source for that request.
+
+```js
+await fetch('http://127.0.0.1:8080/mcp', {
+  method: 'POST',
+  headers: {
+    'content-type': 'application/json',
+    accept: 'application/json, text/event-stream',
+    'x-gateway-s2s': xGatewayS2s,
+    'x-alloy-base-url': 'https://alloy.example.com',
+    'x-alloy-client-id': 'application-client-id',
+    'x-alloy-client-secret': 'application-client-secret',
+  },
+  body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list' }),
+});
+```
 
 ## Tools
 
@@ -69,11 +112,37 @@ npm run lint   # tsc --noEmit
 
 ## Docker
 
+The image listens on `0.0.0.0` inside the container (`MCP_HTTP_HOST`) and defaults to `AUTH_MODE=gateway`. Publish the port on loopback and pass the S2S secret. In gateway mode, Alloy Navigator credentials arrive on each request as `X-Alloy-*` headers; the image does not read them from the environment.
+
 ```bash
 docker build -t alloy-navigator-mcp .
-docker run -p 8080:8080 \
-  -e ALLOY_BASE_URL=https://alloy.example.com \
-  -e ALLOY_CLIENT_ID=... \
-  -e ALLOY_CLIENT_SECRET=... \
+docker run \
+  -e CONDUIT_S2S_SECRET="$CONDUIT_S2S_SECRET" \
+  -p 127.0.0.1:8080:8080 \
   alloy-navigator-mcp
+```
+
+Compose refuses to start when `CONDUIT_S2S_SECRET` is unset, sets `AUTH_MODE=gateway`, publishes `127.0.0.1:8080:8080`, and passes no `ALLOY_*` variables:
+
+```bash
+CONDUIT_S2S_SECRET="$CONDUIT_S2S_SECRET" docker compose up
+```
+
+Single-tenant HTTP (`AUTH_MODE=env`) still requires the S2S secret, then uses `ALLOY_BASE_URL`, `ALLOY_CLIENT_ID`, and `ALLOY_CLIENT_SECRET`:
+
+```bash
+docker run \
+  -e CONDUIT_S2S_SECRET="$CONDUIT_S2S_SECRET" \
+  -e AUTH_MODE=env \
+  -e ALLOY_BASE_URL=https://alloy.example.com \
+  -e ALLOY_CLIENT_ID=your-client-id \
+  -e ALLOY_CLIENT_SECRET=your-client-secret \
+  -p 127.0.0.1:8080:8080 \
+  alloy-navigator-mcp
+```
+
+Local HTTP without a secret is development-only. It binds `127.0.0.1` and logs a warning. A non-loopback `MCP_HTTP_HOST` is overridden to `127.0.0.1`:
+
+```bash
+MCP_TRANSPORT=http MCP_ALLOW_INSECURE_DEV=1 npm run start:http
 ```
