@@ -4,6 +4,7 @@ import { createServer } from './server.js';
 import { runWithCredentials } from './client.js';
 import type { AlloyCredentials } from './types.js';
 import { logger } from './utils/logger.js';
+import { MAX_REQUEST_BODY_BYTES } from './input-limits.js';
 import { verifyS2sHeader, S2S_HEADER } from './s2s-verify.js';
 
 /**
@@ -152,6 +153,22 @@ export async function startHttpServer(): Promise<Server> {
       return;
     }
 
+    // Body cap runs after S2S and (in gateway mode) the credential header
+    // check, so unauthenticated callers always get 401 before 413.
+    const rejectOversizedBody = (): boolean => {
+      const contentLength = Number(headerValue(req.headers['content-length']));
+      if (!Number.isFinite(contentLength) || contentLength <= MAX_REQUEST_BODY_BYTES) return false;
+      res.writeHead(413, { 'Content-Type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          jsonrpc: '2.0',
+          error: { code: -32600, message: `Request body exceeds ${MAX_REQUEST_BODY_BYTES} bytes` },
+          id: null,
+        }),
+      );
+      return true;
+    };
+
     const handle = async () => {
       // SECURITY-CRITICAL invariant: this transport MUST stay stateless
       // (sessionIdGenerator: undefined + enableJsonResponse: true).
@@ -165,6 +182,7 @@ export async function startHttpServer(): Promise<Server> {
       const transport = new StreamableHTTPServerTransport({
         sessionIdGenerator: undefined,
         enableJsonResponse: true,
+        maxRequestBodySize: MAX_REQUEST_BODY_BYTES,
       });
       res.on('close', () => {
         transport.close();
@@ -186,11 +204,13 @@ export async function startHttpServer(): Promise<Server> {
         res.end(JSON.stringify(GATEWAY_CREDENTIALS_UNAUTHORIZED));
         return;
       }
+      if (rejectOversizedBody()) return;
       const credentials: AlloyCredentials = { baseUrl, clientId, clientSecret };
       await runWithCredentials(credentials, handle);
       return;
     }
 
+    if (rejectOversizedBody()) return;
     await handle();
   });
 
