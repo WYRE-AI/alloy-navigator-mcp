@@ -153,9 +153,11 @@ export async function startHttpServer(): Promise<Server> {
       return;
     }
 
-    // Body cap runs only after S2S passes so unauthenticated callers still get 401.
-    const contentLength = Number(headerValue(req.headers['content-length']));
-    if (Number.isFinite(contentLength) && contentLength > MAX_REQUEST_BODY_BYTES) {
+    // Body cap runs after S2S and (in gateway mode) the credential header
+    // check, so unauthenticated callers always get 401 before 413.
+    const rejectOversizedBody = (): boolean => {
+      const contentLength = Number(headerValue(req.headers['content-length']));
+      if (!Number.isFinite(contentLength) || contentLength <= MAX_REQUEST_BODY_BYTES) return false;
       res.writeHead(413, { 'Content-Type': 'application/json' });
       res.end(
         JSON.stringify({
@@ -164,8 +166,8 @@ export async function startHttpServer(): Promise<Server> {
           id: null,
         }),
       );
-      return;
-    }
+      return true;
+    };
 
     const handle = async () => {
       // SECURITY-CRITICAL invariant: this transport MUST stay stateless
@@ -202,11 +204,13 @@ export async function startHttpServer(): Promise<Server> {
         res.end(JSON.stringify(GATEWAY_CREDENTIALS_UNAUTHORIZED));
         return;
       }
+      if (rejectOversizedBody()) return;
       const credentials: AlloyCredentials = { baseUrl, clientId, clientSecret };
       await runWithCredentials(credentials, handle);
       return;
     }
 
+    if (rejectOversizedBody()) return;
     await handle();
   });
 
